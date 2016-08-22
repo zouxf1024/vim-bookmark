@@ -14,7 +14,12 @@ set cpo&vim
 """""""""""""""""""""""""""""""""""""""""""""""""""""""
 " Sign
 """""""""""""""""""""""""""""""""""""""""""""""""""""""
-exec 'sign define vbookmark_sign text=>> texthl=Visual'
+highlight SignColor ctermfg=white ctermbg=blue guifg=white guibg=RoyalBlue3
+
+
+"exec 'sign define vbookmark_sign text=>> texthl=Visual'
+exec 'sign define vbookmark_sign text=>> texthl=SignColor'
+" exec 'sign define vbookmark_sign linehl=SignColor texthl=SignColor text=>>'
 
 function! s:Vbookmark_placeSign(id, file, lineNo)
 	exec 'sign place ' . a:id
@@ -57,6 +62,7 @@ endfun
 function! s:Vbookmark_initVariables()
 	let s:vbookmark_groups = []
 	let s:vbookmark_curGroupIndex = s:Vbookmark_addGroup('default')
+	let s:listBufNr = -1
 endfunction
 
 function! s:Vbookmark_isSignIdExist(id)
@@ -71,7 +77,8 @@ endfunction
 
 function! s:Vbookmark_generateSignId()
 	if !exists('s:vbookmark_signSeed')
-		let s:vbookmark_signSeed = 201210
+		"let s:vbookmark_signSeed = 201210
+		let s:vbookmark_signSeed = 1
 	endif
 	while s:Vbookmark_isSignIdExist(s:vbookmark_signSeed)
 		let s:vbookmark_signSeed += 1
@@ -105,7 +112,28 @@ function! s:Vbookmark_setBookmark(line)
 	endif
 	call s:Vbookmark_placeSign(id, file, a:line)
 	let group = s:vbookmark_groups[s:vbookmark_curGroupIndex]
-	call add(group.marks, {'id': id, 'file': file, 'line': a:line})
+"	call add(group.marks, {'id': id, 'file': file, 'line': a:line})
+"	call add(group.marks, {'id': id, 'file': file, 'line': a:line, 'text': getline("."), 'tabpage': tabpagenr(), 'winnr': tabpagewinnr(tabpagenr())})
+	call add(group.marks, {'file': file, 'id': id, 'line': a:line, 'text': getline("."), 'tabpage': tabpagenr()})
+
+    let CompareFunc = function("s:Vbookmark_sortBookmark")
+    call sort(group.marks, CompareFunc)
+endfunction
+
+function! s:Vbookmark_sortBookmark(first, second)
+	if a:first.file < a:second.file
+		return -1
+	elseif a:first.file > a:second.file
+		return 1
+	else
+		if a:first.line < a:second.line
+			return -1
+		elseif a:first.line > a:second.line
+			return 1
+		else
+			return 0
+		endif
+	endif
 endfunction
 
 function! s:Vbookmark_unsetBookmark(id)
@@ -140,15 +168,48 @@ function! s:Vbookmark_jumpBookmark(method)
 		return
 	endif
 
-	if a:method == 'next'
-		let group.index += 1
-	elseif a:method == 'prev'
-		let group.index -= 1
-	endif
 	call s:Vbookmark_adjustCurMarkIndex()
 
-	let mark = group.marks[group.index]
+	if a:method == 'fileprev' || a:method == 'filenext'
+		if a:method == 'filenext'
+			let group.index += 1
+		elseif a:method == 'fileprev'
+			let group.index -= 1
+		endif
+		call s:Vbookmark_adjustCurMarkIndex()
+		let mark = group.marks[group.index]
+    else 	
+		let file = expand("%:p")
+		let i = 0
+		let tempIndex = group.index
+		let size = len(group.marks)
+		while i < size
+			if a:method == 'next'
+				let tempIndex += 1
+				if tempIndex >= size 
+					let tempIndex = 0
+				endif
+			elseif a:method == 'prev'
+				let tempIndex -= 1
+				if tempIndex < 0
+					let tempIndex = size - 1
+				endif
+			endif
+			let mark = group.marks[tempIndex]
+			if mark.file == file
+				break
+			endif
+			let i += 1
+		endwhile
+		if mark.file != file
+			echo "No bookmarks found in current file"
+			return
+		endif
+		let group.index = tempIndex
+    endif
+
 	try
+		exec 'b ' . mark.file
 		call s:Vbookmark_jumpSign(mark.id, mark.file)
 	catch
 		if !filereadable(mark.file)
@@ -181,6 +242,190 @@ function! s:Vbookmark_unplaceAllSign()
 		catch
 		endtry
 	endfor
+endfunction
+
+function! s:Vbookmark_listAllBookmark()
+
+	let group = s:vbookmark_groups[s:vbookmark_curGroupIndex]
+	if empty(group.marks)
+        echo "No bookmarks found"
+		return
+	endif
+
+    if s:listBufNr < 0 || !bufexists(s:listBufNr)
+		let s:listBufNr = bufnr("Bookmarks", 1)
+	endif
+
+	let l:bfwn = bufwinnr(s:listBufNr)
+	if l:bfwn == winnr()
+		" viewport wth buffer already active and current
+		return
+	"elseif gettabwinvar(s:listTabNr,1,"is_bklistwin") == 1
+	else
+		let haslistTabpage = 0
+		for i in range(tabpagenr('$'))
+			if gettabwinvar(i+1,1,"is_bklistwin") == 1
+				let haslistTabpage = 1
+				execute "normal!"  i+1 . "gt"
+				break
+			endif
+		endfor
+		
+		if haslistTabpage == 0
+			execute("tabedit")
+			execute("b " . s:listBufNr)
+			call s:Vbookmark_setupListWin()
+		endif
+	endif
+	
+	call s:Vbookmark_cleanListWin()
+	call s:Vbookmark_renderListWin()
+
+endfunction
+
+function! s:Vbookmark_setupListWin()
+
+	call setwinvar(1, "is_bklistwin", 1)
+
+	setlocal buftype=nofile
+	setlocal noswapfile
+	setlocal nowrap
+	set bufhidden=hide
+	setlocal nobuflisted
+	setlocal nolist
+	setlocal noinsertmode
+	setlocal nonumber
+	setlocal cursorline
+	setlocal nospell
+	setlocal matchpairs=""
+
+	for key in [".", "p", "P", "C", "x", "X", "r", "R", "i", "I", "a", "A", "D", "S", "U"]
+		try
+			execute "nnoremap <buffer> " . key . " <NOP>"
+		catch //
+		endtry
+	endfor
+
+	noremap <buffer> <silent> <CR>        :<C-U>call Vbookmark_jumpto()<CR>
+
+	call s:Vbookmark_setListWinSyntax()
+
+	"setlocal statusline=%{}
+endfunction
+
+"hi TabNum ctermfg=White ctermbg=2
+"hi TabLineSel term=bold cterm=bold ctermbg=Red ctermfg=yellow
+"hi TabLine ctermfg=yellow ctermbg=DarkGray
+
+hi FileNameHL cterm=bold ctermfg=yellow
+"hi LineNumHL cterm=none ctermfg=yellow
+hi LineNumHL ctermbg=none ctermfg=Green
+
+function! s:Vbookmark_setListWinSyntax()
+	syn match FileName '^<\d\+> .*'
+	highlight! link FileName FileNameHL
+	syn match LineNum '^ \+\d\+  '
+	highlight! link LineNum LineNumHL
+endfunction
+
+function! s:Vbookmark_cleanListWin()
+	call cursor(1, 1)
+	exec 'silent! normal! "_dG'
+endfunction
+
+function! s:Vbookmark_renderListWin()
+	let marks = s:vbookmark_groups[s:vbookmark_curGroupIndex].marks
+	let prefile = " "
+	let fileIndex = 0
+	let bookmarkIndex = 0
+	let s:listwinJumpMap = []
+	for mark in marks
+		if mark.file != prefile
+			let fileIndex = fileIndex + 1
+			let l:markpath =  "<" . string(fileIndex) . "> " 
+			let l:markpath .= fnamemodify(mark.file, ":.")
+			let prefile = mark.file
+			call append(line("$")-1, l:markpath) 
+			call add(s:listwinJumpMap,bookmarkIndex)
+		endif
+
+		let l:markline = "    " . string(mark.line)
+		let l:markline = s:_format_align_left(l:markline,8,' ')
+		let l:markline .= mark.text
+		"let l:markline = string(mark.line)
+		"let l:markline = s:_format_align_right(l:markline,6,' ') . "  "
+		"let l:markline .= mark.text
+		call append(line("$")-1, l:markline)
+		call add(s:listwinJumpMap,bookmarkIndex)
+		let bookmarkIndex = bookmarkIndex + 1
+	endfor
+
+	try
+		" remove extra last line
+		execute('normal! GV"_X')
+	catch //
+	endtry
+
+	call cursor(1, 1)
+endfunction
+
+
+function! s:_format_align_left(text, width, fill_char)
+    let l:fill = repeat(a:fill_char, a:width-len(a:text))
+    return a:text . l:fill
+endfunction
+
+function! s:_format_align_right(text, width, fill_char)
+    let l:fill = repeat(a:fill_char, a:width-len(a:text))
+    return l:fill . a:text
+endfunction
+
+
+function! Vbookmark_jumpto()
+
+	let group = s:vbookmark_groups[s:vbookmark_curGroupIndex]
+	if empty(group.marks)
+        echo "No bookmarks found"
+		return
+	endif
+
+	let line = line(".") - 1
+	let group.index = s:listwinJumpMap[line]
+
+	let mark = group.marks[group.index]
+	let find = 0
+	call s:Vbookmark_adjustCurMarkIndex()
+	try
+		if (bufname(tabpagebuflist(mark.tabpage)[0]) == fnamemodify(mark.file, ":."))
+			let find  = 1
+			execute "normal!"  mark.tabpage . "gt"
+			call s:Vbookmark_jumpSign(mark.id, mark.file)
+		else 
+			for i in range(tabpagenr('$'))
+				if (bufname(tabpagebuflist(i+1)[0]) == fnamemodify(mark.file, ":."))
+					let find  = 1
+					execute "normal!"  i+1 . "gt"
+					call s:Vbookmark_jumpSign(mark.id, mark.file)
+					break
+				endif
+			endfor
+		endif
+		if find == 0
+			execute("tabedit " .  mark.file)
+			call s:Vbookmark_refreshSign(mark.file)
+			call s:Vbookmark_jumpSign(mark.id, mark.file)
+		endif
+	catch
+		if !filereadable(mark.file)
+			call remove(group.marks, group.index)
+			call s:Vbookmark_adjustCurMarkIndex()
+			call s:Vbookmark_jumpBookmark(a:method)
+			return
+		endif
+		execute("tabedit " .  mark.file)
+		call s:Vbookmark_refreshSign(mark.file)
+		call s:Vbookmark_jumpSign(mark.id, mark.file)
+	endtry
 endfunction
 
 function! s:Vbookmark_clearAllBookmark()
@@ -271,7 +516,7 @@ function! s:Vbookmark_saveAllBookmark()
 	for group in s:vbookmark_groups
 		let outputGroups .= '{"name": "' . group.name . '", "index": ' . group.index . ', "marks": ['
 		for mark in group.marks
-			let outputGroups .= '{"id": ' . mark.id . ', "file": "' . escape(mark.file, ' \') . '", "line": ' . mark.line . '},'
+			let outputGroups .= '{"id": ' . mark.id . ', "file": "' . escape(mark.file, ' \') . '", "line": ' . mark.line . ', "text": "' . mark.text . '", "tabpage": ' . mark.tabpage . '},'
 		endfor
 		let outputGroups .= ']},'
 	endfor
@@ -329,8 +574,20 @@ function! s:VbookmarkPrevious()
 	call s:Vbookmark_jumpBookmark('prev')
 endfunction
 
+function! s:VbookmarkNextInFile()
+	call s:Vbookmark_jumpBookmark('filenext')
+endfunction
+
+function! s:VbookmarkPreviousInFile()
+	call s:Vbookmark_jumpBookmark('fileprev')
+endfunction
+
 function! s:VbookmarkClearAll()
 	call s:Vbookmark_clearAllBookmark()
+endfunction
+
+function! s:VbookmarkListAll()
+	call s:Vbookmark_listAllBookmark()
 endfunction
 
 function! s:VbookmarkGroup(name)
@@ -363,8 +620,20 @@ if !exists(':VbookmarkPrevious')
 	command -nargs=0 VbookmarkPrevious :call s:VbookmarkPrevious()
 endif
 
+if !exists(':VbookmarkNextInFile')
+	command -nargs=0 VbookmarkNextInFile :call s:VbookmarkNextInFile()
+endif
+
+if !exists(':VbookmarkPreviousInFile')
+	command -nargs=0 VbookmarkPreviousInFile :call s:VbookmarkPreviousInFile()
+endif
+
 if !exists(':VbookmarkClearAll')
 	command -nargs=0 VbookmarkClearAll :call s:VbookmarkClearAll()
+endif
+
+if !exists(':VbookmarkListAll')
+	command -nargs=0 VbookmarkListAll :call s:VbookmarkListAll()
 endif
 
 if !exists(':VbookmarkGroup')
@@ -379,6 +648,8 @@ if !exists('g:vbookmark_disableMapping')
 	nnoremap <silent> mm :VbookmarkToggle<CR>
 	nnoremap <silent> mn :VbookmarkNext<CR>
 	nnoremap <silent> mp :VbookmarkPrevious<CR>
+	nnoremap <silent> mfn :VbookmarkNextInFile<CR>
+	nnoremap <silent> mfp :VbookmarkPreviousInFile<CR>
 	nnoremap <silent> ma :VbookmarkClearAll<CR>
 endif
 
